@@ -1,0 +1,34 @@
+[project]
+name = "prediction-pulse"
+version = "0.1.0"
+description = "Faceless, data-driven prediction-market content engine (Bluesky-first)"
+requires-python = ">=3.13"
+dependencies = [
+    "anthropic>=0.52.0",
+    "atproto>=0.0.55",
+    "httpx>=0.27.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+server = [
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.0",
+]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[project.scripts]
+pulse = "pulse.main:cli"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
