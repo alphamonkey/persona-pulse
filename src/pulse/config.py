@@ -31,5 +31,13 @@ DB_PATH = os.environ.get("PULSE_DB_PATH", "prediction_pulse.db")
 MIN_ODDS_MOVE = 0.10          # post when an event's probability moves >= 10 points
 MIN_VOLUME_SPIKE = 3.0        # ... or volume spikes >= 3x its recent average
 
+# ── Detector windows / baselines ──
+ODDS_SWING_LOOKBACK_SECONDS = 6 * 3600   # window over which an odds move is measured
+VOLUME_SPIKE_BASELINE_N = 5              # prior intervals defining "recent average"
+MILESTONE_LEVELS = (0.25, 0.50, 0.75, 0.90)  # round probability levels worth a post
+NEW_MARKET_MIN_VOLUME = 100.0            # cumulative-volume floor to flag a new market
+NEW_MARKET_DEBUT_WINDOW = 6              # a market is "new" while it has <= this many snapshots
+MAX_RECENT_SNAPSHOTS = 64                # cap loaded per market (INVARIANT: >> DEBUT_WINDOW)
+
 # ── Cadence ──
 MAX_POSTS_PER_DAY = 8         # rate cap so the feed stays signal, not spam

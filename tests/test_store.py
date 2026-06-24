@@ -1,0 +1,137 @@
+"""Tests for the SQLite+WAL snapshot store and idempotency log."""
+
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from pulse.models import Event, MarketMeta, Snapshot, ValueKind
+from pulse.store.db import Database
+
+_T = datetime(2026, 6, 24, 12, 0, 0, tzinfo=timezone.utc)
+
+
+@pytest.fixture
+def db(tmp_path):
+    database = Database(tmp_path / "test.db")
+    database.connect()
+    yield database
+    database.close()
+
+
+def _snap(market_id="KXTEST", ts=_T, value=0.5, volume=0.0, venue="kalshi", meta=None):
+    return Snapshot(
+        venue=venue,
+        market_id=market_id,
+        ts=ts,
+        value=value,
+        value_kind=ValueKind.PROBABILITY,
+        volume=volume,
+        meta=meta,
+    )
+
+
+def _event(dedup_key="odds_swing:kalshi:KXTEST:2026-06-24"):
+    return Event(
+        rule="odds_swing",
+        venue="kalshi",
+        market_id="KXTEST",
+        ts=_T,
+        value_kind=ValueKind.PROBABILITY,
+        from_value=0.40,
+        to_value=0.55,
+        magnitude=0.15,
+        direction="up",
+        headline="KXTEST: odds 40% -> 55%",
+        dedup_key=dedup_key,
+        context={"window_hours": 6},
+    )
+
+
+# ── snapshot ingest ──
+
+def test_insert_snapshot_is_idempotent_on_venue_market_ts(db):
+    assert db.insert_snapshot(_snap()) is True
+    assert db.insert_snapshot(_snap()) is False  # same (venue, market_id, ts)
+    assert len(db.get_recent_snapshots("kalshi", "KXTEST")) == 1
+
+
+def test_insert_distinct_timestamps_both_stored(db):
+    db.insert_snapshot(_snap(ts=_T))
+    db.insert_snapshot(_snap(ts=_T + timedelta(minutes=10)))
+    assert len(db.get_recent_snapshots("kalshi", "KXTEST")) == 2
+
+
+def test_get_recent_snapshots_returns_ascending_by_ts(db):
+    db.insert_snapshot(_snap(ts=_T + timedelta(minutes=20), value=0.7))
+    db.insert_snapshot(_snap(ts=_T, value=0.5))
+    db.insert_snapshot(_snap(ts=_T + timedelta(minutes=10), value=0.6))
+    series = db.get_recent_snapshots("kalshi", "KXTEST")
+    assert [s.value for s in series] == [0.5, 0.6, 0.7]
+
+
+def test_get_recent_snapshots_respects_limit_keeping_newest(db):
+    for i in range(5):
+        db.insert_snapshot(_snap(ts=_T + timedelta(minutes=i), value=0.5 + i / 100))
+    series = db.get_recent_snapshots("kalshi", "KXTEST", limit=2)
+    # newest 2, still returned ascending
+    assert [s.value for s in series] == [0.53, 0.54]
+
+
+def test_snapshots_isolated_by_market_and_venue(db):
+    db.insert_snapshot(_snap(market_id="A"))
+    db.insert_snapshot(_snap(market_id="B"))
+    db.insert_snapshot(_snap(market_id="A", venue="polymarket"))
+    assert len(db.get_recent_snapshots("kalshi", "A")) == 1
+    assert len(db.get_recent_snapshots("kalshi", "B")) == 1
+    assert len(db.get_recent_snapshots("polymarket", "A")) == 1
+
+
+def test_snapshot_round_trips_meta_ts_and_value_kind(db):
+    meta = MarketMeta(title="Will X happen?", status="active",
+                      resolution_date="2026-12-31", category="Politics",
+                      extra={"series": "KXX"})
+    db.insert_snapshot(_snap(meta=meta))
+    (got,) = db.get_recent_snapshots("kalshi", "KXTEST")
+    assert got.meta == meta
+    assert got.ts == _T and got.ts.tzinfo is not None
+    assert got.value_kind is ValueKind.PROBABILITY
+
+
+def test_distinct_markets_per_venue(db):
+    db.insert_snapshot(_snap(market_id="A"))
+    db.insert_snapshot(_snap(market_id="B"))
+    db.insert_snapshot(_snap(market_id="C", venue="polymarket"))
+    assert db.distinct_markets("kalshi") == ["A", "B"]
+    assert db.distinct_markets("polymarket") == ["C"]
+
+
+# ── idempotency log ──
+
+def test_record_posted_is_idempotent(db):
+    assert db.has_posted("odds_swing:kalshi:KXTEST:2026-06-24") is False
+    assert db.record_posted(_event()) is True
+    assert db.has_posted("odds_swing:kalshi:KXTEST:2026-06-24") is True
+    assert db.record_posted(_event()) is False  # same dedup_key
+
+
+def test_record_posted_persists_payload(db):
+    db.record_posted(_event())
+    rows = db.conn.execute("SELECT * FROM posted_events").fetchall()
+    assert len(rows) == 1
+    row = dict(rows[0])
+    assert row["rule"] == "odds_swing"
+    assert row["headline"] == "KXTEST: odds 40% -> 55%"
+    assert row["direction"] == "up"
+
+
+# ── read-only safety ──
+
+def test_connect_readonly_rejects_writes(db, tmp_path):
+    db.insert_snapshot(_snap())
+    ro = Database.connect_readonly(tmp_path / "test.db")
+    try:
+        assert len(ro.get_recent_snapshots("kalshi", "KXTEST")) == 1
+        with pytest.raises(Exception):
+            ro.insert_snapshot(_snap(ts=_T + timedelta(minutes=1)))
+    finally:
+        ro.close()
