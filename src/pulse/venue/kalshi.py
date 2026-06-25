@@ -12,7 +12,13 @@ from datetime import datetime
 
 import httpx
 
-from pulse.config import HTTP_MAX_RETRIES, HTTP_TIMEOUT_SECONDS, KALSHI_API_HOST
+from pulse.config import (
+    HTTP_MAX_RETRIES,
+    HTTP_TIMEOUT_SECONDS,
+    KALSHI_API_HOST,
+    MIN_MARKET_VOLUME_24H,
+    PULSE_CATEGORIES,
+)
 from pulse.models import MarketMeta, Snapshot, ValueKind
 
 VENUE = "kalshi"
@@ -124,3 +130,41 @@ class KalshiClient:
             cursor = data.get("cursor")
             if not cursor:
                 break
+
+
+class KalshiSource:
+    """Composes the client + normalizer, applying the category allowlist + volume floor."""
+
+    venue = VENUE
+
+    def __init__(
+        self,
+        client: KalshiClient,
+        *,
+        categories=PULSE_CATEGORIES,
+        min_volume_24h: float = MIN_MARKET_VOLUME_24H,
+    ) -> None:
+        self._client = client
+        self._categories = set(categories)
+        self._min_volume_24h = min_volume_24h
+
+    def fetch_snapshots(self, now: datetime) -> list[Snapshot]:
+        snapshots: list[Snapshot] = []
+        for event in self._client.iter_open_events():
+            category = event.get("category")
+            if category not in self._categories:
+                continue
+            for market in event.get("markets") or []:
+                if market.get("status") != "active":
+                    continue
+                if float(market.get("volume_24h") or 0.0) < self._min_volume_24h:
+                    continue
+                raw = {
+                    **market,
+                    "event_ticker": event.get("event_ticker"),
+                    "series_ticker": event.get("series_ticker"),
+                }
+                snap = market_to_snapshot(raw, category, now)
+                if snap is not None:
+                    snapshots.append(snap)
+        return snapshots
