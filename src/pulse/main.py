@@ -4,6 +4,8 @@
 `pulse run`   drives the same cycle on a cadence (dryrun), until stopped.
 `pulse draft` writes post drafts for the top recent events in a persona's voice (dryrun);
               with `--interval N` it drafts on a cadence until stopped.
+`pulse publish` posts a persona's freshest drafts to its channels (Bluesky) — dryrun until
+                PULSE_MODE=live; `--interval N` runs it on a cadence.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ from pulse import config
 from pulse.drafter import DraftJob, draft_once
 from pulse.persona import load_persona
 from pulse.poller import PollJob
+from pulse.publisher import PublishJob
 from pulse.scheduler.interval import IntervalScheduler
 from pulse.store.db import Database
 from pulse.venue.kalshi import KalshiClient, KalshiSource
@@ -58,6 +61,22 @@ def _run_scheduled(job, interval: int, max_iterations: int) -> None:
 def _run_loop(interval: int, max_iterations: int) -> None:
     with _poll_job() as job:
         _run_scheduled(job, interval, max_iterations)
+
+
+def _run_publish(limit: int, persona_name: str, interval: int, max_iterations: int) -> None:
+    persona = load_persona(persona_name)
+    db = Database(config.DB_PATH)
+    db.connect()
+    try:
+        job = PublishJob(db, persona, limit=limit)
+        if interval > 0:
+            log.info("publishing every %ds (persona=%s, mode=%s)",
+                     interval, persona.name, config.PULSE_MODE)
+            _run_scheduled(job, interval, max_iterations)
+        else:
+            job.run()
+    finally:
+        db.close()
 
 
 def make_writer() -> Writer:
@@ -106,6 +125,15 @@ def cli(argv: list[str] | None = None) -> None:
                          help="Run on a cadence (seconds); 0 = one-shot (default: 0).")
     draft_p.add_argument("--max-iterations", type=int, default=0,
                          help="With --interval, stop after N cycles; 0 = unlimited (default: 0).")
+    pub_p = sub.add_parser("publish", help="Post a persona's freshest drafts to its channels.")
+    pub_p.add_argument("--persona", default=config.PERSONA,
+                       help="Persona name under personas/ (default: %(default)s).")
+    pub_p.add_argument("--limit", type=int, default=config.MAX_POSTS_PER_DAY,
+                       help="Max posts this run (also capped by the daily limit; default: %(default)s).")
+    pub_p.add_argument("--interval", type=int, default=0,
+                       help="Run on a cadence (seconds); 0 = one-shot (default: 0).")
+    pub_p.add_argument("--max-iterations", type=int, default=0,
+                       help="With --interval, stop after N cycles; 0 = unlimited (default: 0).")
     serve_p = sub.add_parser("serve", help="Run the read-only monitoring dashboard.")
     serve_p.add_argument("--host", default=config.DASHBOARD_HOST,
                          help="Bind host (default: %(default)s).")
@@ -120,6 +148,8 @@ def cli(argv: list[str] | None = None) -> None:
         _run_loop(args.interval, args.max_iterations)
     elif args.command == "draft":
         _run_draft(args.limit, args.persona, args.interval, args.max_iterations)
+    elif args.command == "publish":
+        _run_publish(args.limit, args.persona, args.interval, args.max_iterations)
     elif args.command == "serve":
         from pulse.server.app import serve  # lazy: fastapi only needed for the dashboard
         log.info("dashboard on http://%s:%d", args.host, args.port)

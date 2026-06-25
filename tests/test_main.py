@@ -208,3 +208,71 @@ def test_draft_without_interval_stays_one_shot(monkeypatch):
 
     assert calls["limit"] == 1   # draft_once was called directly (one-shot path)
     assert calls["closed"] is True
+
+
+def _publish_fakes(monkeypatch, calls):
+    class FakeDB:
+        def __init__(self, *a, **k):
+            pass
+
+        def connect(self):
+            calls["connected"] = True
+
+        def close(self):
+            calls["closed"] = True
+
+    monkeypatch.setattr(main, "Database", FakeDB)
+    monkeypatch.setattr(main, "load_persona", lambda name: SimpleNamespace(name=name, channels=[]))
+
+
+def test_publish_one_shot(monkeypatch):
+    calls = {}
+    _publish_fakes(monkeypatch, calls)
+
+    from pulse.publisher import PublishReport
+
+    class FakeJob:
+        name = "publish"
+
+        def __init__(self, db, persona, *, limit):
+            calls["limit"] = limit
+            calls["persona"] = persona.name
+
+        def run(self):
+            calls["ran"] = True
+            return PublishReport()
+
+    monkeypatch.setattr(main, "PublishJob", FakeJob)
+
+    main.cli(["publish", "--persona", "gnome", "--limit", "2"])
+
+    assert calls["persona"] == "gnome"
+    assert calls["limit"] == 2
+    assert calls["ran"] is True
+    assert calls["closed"] is True
+
+
+def test_publish_loop_drives_scheduler(monkeypatch):
+    calls = {}
+    _publish_fakes(monkeypatch, calls)
+
+    from pulse.publisher import PublishJob
+
+    class FakeScheduler:
+        def __init__(self, job, interval_seconds, *, max_iterations=0):
+            calls["job_name"] = job.name
+            calls["is_publishjob"] = isinstance(job, PublishJob)
+            calls["interval"] = interval_seconds
+
+        def run(self, stop=None):
+            calls["scheduler_ran"] = True
+
+    monkeypatch.setattr(main, "IntervalScheduler", FakeScheduler)
+
+    main.cli(["publish", "--interval", "3600", "--max-iterations", "1"])
+
+    assert calls["job_name"] == "publish"
+    assert calls["is_publishjob"] is True
+    assert calls["interval"] == 3600
+    assert calls["scheduler_ran"] is True
+    assert calls["closed"] is True
