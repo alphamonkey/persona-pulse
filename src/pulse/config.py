@@ -69,6 +69,7 @@ DASHBOARD_PORT = int(os.environ.get("PULSE_DASHBOARD_PORT", "8440"))
 PERSONAS_DIR = os.environ.get("PULSE_PERSONAS_DIR", "personas")
 PERSONA = os.environ.get("PULSE_PERSONA", "example")  # which persona to write as
 WRITER_MAX_TOKENS = 150          # a Bluesky post is short; cap cost + runaway
+MAX_DRAFT_AGE_HOURS = 24         # don't publish drafts older than this (stale news)
 BLUESKY_MAX_GRAPHEMES = 300      # Bluesky post length limit
 DRAFTS_PER_RUN = MAX_POSTS_PER_DAY  # cap events sent to the writer per draft cycle
 
