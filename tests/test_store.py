@@ -216,3 +216,53 @@ def test_stats_counts(db):
 def test_connect_sets_busy_timeout(db):
     # Two writer processes (poller + drafter) share the DB; writers must wait for the lock.
     assert db.conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
+
+
+# ── posts (publisher) ──
+
+from types import SimpleNamespace  # noqa: E402
+
+
+def _result(uri="at://did:plc:x/app.bsky.feed.post/abc", channel="bluesky", text="hi"):
+    return SimpleNamespace(channel=channel, posted=True, uri=uri, cid="cid1", text=text)
+
+
+def test_insert_post_idempotent_per_channel(db):
+    db.insert_draft(_draft(dedup_key="k1"))
+    assert db.has_posted_to("k1", "bluesky") is False
+    assert db.insert_post("k1", "example", _result()) is True
+    assert db.has_posted_to("k1", "bluesky") is True
+    assert db.insert_post("k1", "example", _result(uri="other")) is False  # same (key, channel)
+    # a different channel for the same event is allowed
+    assert db.insert_post("k1", "example", _result(channel="x")) is True
+
+
+def test_posts_today_counts_rolling_24h(db):
+    now = datetime.now(timezone.utc)
+    db.conn.execute(
+        "INSERT INTO posts (event_dedup_key, persona, channel, uri, cid, text, posted_at) "
+        "VALUES ('a','p','bluesky','u','c','t',?)", ((now - timedelta(hours=1)).isoformat(),))
+    db.conn.execute(
+        "INSERT INTO posts (event_dedup_key, persona, channel, uri, cid, text, posted_at) "
+        "VALUES ('b','p','bluesky','u','c','t',?)", ((now - timedelta(hours=30)).isoformat(),))
+    db.conn.commit()
+    assert db.posts_today("bluesky") == 1   # the 30h-old one is outside the window
+
+
+def test_get_unposted_drafts_filters(db):
+    now = datetime.now(timezone.utc)
+    # fresh + unposted -> eligible
+    db.insert_draft(Draft(event_dedup_key="fresh", persona="gnome", text="fresh post",
+                          created_at=now))
+    # stale -> excluded
+    db.insert_draft(Draft(event_dedup_key="stale", persona="gnome", text="old post",
+                          created_at=now - timedelta(hours=48)))
+    # other persona -> excluded
+    db.insert_draft(Draft(event_dedup_key="other", persona="elf", text="not mine", created_at=now))
+    # already posted to bluesky -> excluded
+    db.insert_draft(Draft(event_dedup_key="done", persona="gnome", text="posted", created_at=now))
+    db.insert_post("done", "gnome", _result())
+
+    out = db.get_unposted_drafts("bluesky", persona="gnome", limit=10, max_age_hours=24)
+    assert [d.event_dedup_key for d in out] == ["fresh"]
+    assert out[0].text == "fresh post"

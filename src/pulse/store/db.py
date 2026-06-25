@@ -12,11 +12,12 @@ import json
 import sqlite3
 import threading
 from dataclasses import asdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from pulse.config import MAX_RECENT_SNAPSHOTS
-from pulse.models import Event, MarketMeta, Snapshot, ValueKind
+from pulse.models import Event, MarketMeta, Snapshot, ValueKind, _now
+from pulse.writer.base import Draft
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS market_snapshots (
@@ -56,6 +57,18 @@ CREATE TABLE IF NOT EXISTS drafts (
     media            TEXT,
     status           TEXT NOT NULL DEFAULT 'draft',
     created_at       TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS posts (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_dedup_key  TEXT NOT NULL,
+    persona          TEXT NOT NULL,
+    channel          TEXT NOT NULL,
+    uri              TEXT,
+    cid              TEXT,
+    text             TEXT NOT NULL,
+    posted_at        TEXT NOT NULL,
+    UNIQUE(event_dedup_key, channel)
 );
 """
 
@@ -255,6 +268,68 @@ class Database:
             "drafts": q("SELECT COUNT(*) FROM drafts").fetchone()[0],
             "last_poll": q("SELECT MAX(ts) FROM market_snapshots").fetchone()[0],
         }
+
+    # ── posts (publisher) ──
+
+    def insert_post(self, event_dedup_key: str, persona: str, result) -> bool:
+        """Record a successful post. Returns True if newly recorded, False if a duplicate.
+
+        Idempotency backstop: UNIQUE(event_dedup_key, channel) means a draft is never posted
+        to the same channel twice, even under a race.
+        """
+        assert self.conn is not None
+        with self._lock:
+            cur = self.conn.execute(
+                """INSERT OR IGNORE INTO posts
+                   (event_dedup_key, persona, channel, uri, cid, text, posted_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (event_dedup_key, persona, result.channel, result.uri, result.cid, result.text,
+                 _now().isoformat()),
+            )
+            self.conn.commit()
+            return cur.rowcount > 0
+
+    def has_posted_to(self, event_dedup_key: str, channel: str) -> bool:
+        assert self.conn is not None
+        row = self.conn.execute(
+            "SELECT 1 FROM posts WHERE event_dedup_key = ? AND channel = ?",
+            (event_dedup_key, channel),
+        ).fetchone()
+        return row is not None
+
+    def posts_today(self, channel: str) -> int:
+        """Posts to `channel` in the last 24h (rolling) — for the daily rate cap."""
+        assert self.conn is not None
+        cutoff = (_now() - timedelta(hours=24)).isoformat()
+        return self.conn.execute(
+            "SELECT COUNT(*) FROM posts WHERE channel = ? AND posted_at >= ?",
+            (channel, cutoff),
+        ).fetchone()[0]
+
+    def get_unposted_drafts(
+        self, channel: str, *, persona: str, limit: int, max_age_hours: int
+    ) -> list[Draft]:
+        """A persona's drafts not yet posted to `channel`, fresher than the cutoff, newest first."""
+        assert self.conn is not None
+        cutoff = (_now() - timedelta(hours=max_age_hours)).isoformat()
+        rows = self.conn.execute(
+            """SELECT d.* FROM drafts d
+               LEFT JOIN posts p ON p.event_dedup_key = d.event_dedup_key AND p.channel = ?
+               WHERE p.id IS NULL AND d.persona = ? AND d.created_at >= ?
+               ORDER BY d.created_at DESC LIMIT ?""",
+            (channel, persona, cutoff, limit),
+        ).fetchall()
+        return [self._row_to_draft(r) for r in rows]
+
+    @staticmethod
+    def _row_to_draft(row: sqlite3.Row) -> Draft:
+        return Draft(
+            event_dedup_key=row["event_dedup_key"],
+            persona=row["persona"],
+            text=row["text"],
+            media=json.loads(row["media"]) if row["media"] else [],
+            created_at=datetime.fromisoformat(row["created_at"]),
+        )
 
     def get_undrafted_events(self, limit: int = 200) -> list[Event]:
         """Detected events (from posted_events) without a draft yet, newest first.
