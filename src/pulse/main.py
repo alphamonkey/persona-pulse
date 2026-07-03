@@ -24,6 +24,7 @@ from pulse.metrics.collect import MetricsJob
 from pulse.metrics.factory import make_engagement_source
 from pulse.persona import load_persona
 from pulse.poller import PollJob
+from pulse.pruner import PruneJob
 from pulse.publisher import PublishJob
 from pulse.scheduler.interval import IntervalScheduler
 from pulse.scheduler.windowed import WindowedScheduler
@@ -164,6 +165,33 @@ def _run_engage(limit: int, persona_name: str, interval: int, max_iterations: in
         db.close()
 
 
+def _run_prune(retention_days: int) -> None:
+    db = Database(config.DB_PATH)
+    db.connect()
+    try:
+        PruneJob(db, retention_days=retention_days).run()
+    finally:
+        db.close()
+
+
+def _run_vacuum() -> None:
+    """One-time compaction of the on-disk file. Stop the writer services first (needs EXCLUSIVE)."""
+    import os
+
+    def _mb(path: str) -> float:
+        return os.path.getsize(path) / 1e6 if os.path.exists(path) else 0.0
+
+    db = Database(config.DB_PATH)
+    db.connect()
+    try:
+        before = _mb(config.DB_PATH)
+        log.info("vacuum: compacting %s (%.1f MB) — needs an exclusive lock", config.DB_PATH, before)
+        db.vacuum()
+        log.info("vacuum complete: %.1f MB -> %.1f MB", before, _mb(config.DB_PATH))
+    finally:
+        db.close()
+
+
 def make_writer() -> Writer:
     """ClaudeWriter when an API key is configured; the zero-cost template writer otherwise."""
     if config.ANTHROPIC_API_KEY:
@@ -251,6 +279,10 @@ def cli(argv: list[str] | None = None) -> None:
                        help="With --interval, stop after N cycles; 0 = unlimited (default: 0).")
     met_p.add_argument("--jitter", type=int, default=0,
                        help="Max extra random seconds added to each interval (default: 0).")
+    prune_p = sub.add_parser("prune", help="Delete market snapshots older than the retention horizon and reclaim space.")
+    prune_p.add_argument("--retention-days", type=int, default=config.SNAPSHOT_RETENTION_DAYS,
+                         help="Keep snapshots newer than this many days (default: %(default)s).")
+    sub.add_parser("vacuum", help="One-time: compact the DB file + convert to incremental auto_vacuum (stop writers first).")
     serve_p = sub.add_parser("serve", help="Run the read-only monitoring dashboard.")
     serve_p.add_argument("--host", default=config.DASHBOARD_HOST,
                          help="Bind host (default: %(default)s).")
@@ -271,6 +303,10 @@ def cli(argv: list[str] | None = None) -> None:
         _run_engage(args.limit, args.persona, args.interval, args.max_iterations, args.jitter)
     elif args.command == "metrics":
         _run_metrics(args.limit, args.interval, args.max_iterations, args.jitter)
+    elif args.command == "prune":
+        _run_prune(args.retention_days)
+    elif args.command == "vacuum":
+        _run_vacuum()
     elif args.command == "serve":
         from pulse.server.app import serve  # lazy: fastapi only needed for the dashboard
         log.info("dashboard on http://%s:%d", args.host, args.port)

@@ -128,6 +128,10 @@ class Database:
     def connect(self) -> None:
         self.conn = sqlite3.connect(self.path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        # Born reclaimable: incremental auto_vacuum lets `reclaim()` hand freed pages back to the OS
+        # after a prune. MUST precede the first CREATE TABLE to take effect on a fresh DB; on an
+        # already-created DB it's inert until a full VACUUM converts it (see `vacuum()`).
+        self.conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
         self.conn.execute("PRAGMA journal_mode=WAL")
         # Two writer processes (poller + drafter) share this DB; WAL serializes writers, so make
         # a writer wait for the lock rather than erroring. Explicit so it doesn't depend on
@@ -199,6 +203,48 @@ class Database:
             (venue,),
         ).fetchall()
         return [r["market_id"] for r in rows]
+
+    # ── retention (market_snapshots grows unbounded without this) ──
+
+    def prune_snapshots(self, before: datetime) -> int:
+        """Delete snapshots strictly older than `before`; return the number of rows deleted.
+
+        `ts` is stored as tz-aware ISO-8601 UTC, so the text comparison is chronological. Detector
+        reads only the last few hours per market, so a horizon of days is always safe.
+        """
+        assert self.conn is not None
+        with self._lock:
+            cur = self.conn.execute(
+                "DELETE FROM market_snapshots WHERE ts < ?", (before.isoformat(),)
+            )
+            self.conn.commit()
+            return cur.rowcount
+
+    def reclaim(self) -> None:
+        """Hand freed pages back to the OS and truncate the WAL — the cheap follow-up to a prune.
+
+        A DELETE frees pages but SQLite keeps them in the file until a vacuum; with incremental
+        auto_vacuum this is a bounded, WAL-friendly operation (no whole-file rewrite, no exclusive
+        lock). The wal_checkpoint(TRUNCATE) keeps the WAL from retaining the reclaimed space.
+        """
+        assert self.conn is not None
+        with self._lock:
+            self.conn.execute("PRAGMA incremental_vacuum")
+            self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            self.conn.commit()
+
+    def vacuum(self) -> None:
+        """One-time compaction + conversion to incremental auto_vacuum for an existing DB.
+
+        Setting auto_vacuum in `connect()` is inert on a DB whose tables already exist; a full VACUUM
+        is what actually converts it (and reclaims all currently-free space at once). VACUUM needs an
+        EXCLUSIVE lock, so run this with the other writer services stopped.
+        """
+        assert self.conn is not None
+        with self._lock:
+            self.conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
+            self.conn.execute("VACUUM")
+            self.conn.commit()
 
     @staticmethod
     def _row_to_snapshot(row: sqlite3.Row) -> Snapshot:

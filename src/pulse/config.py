@@ -26,6 +26,10 @@ WRITER_MODEL = "claude-haiku-4-5-20251001"  # cheap; this is a language task, lo
 
 # ── Persistence ──
 DB_PATH = os.environ.get("PULSE_DB_PATH", "prediction_pulse.db")
+# Retention: market_snapshots grows unbounded (one row per market per poll). The detector only ever
+# reads the last few hours per market, so days is a huge safety margin. `pulse prune` (daily timer)
+# drops rows older than this and reclaims the freed pages.
+SNAPSHOT_RETENTION_DAYS = 7
 
 # ── Detector thresholds (starting points — tune from real data) ──
 MIN_ODDS_MOVE = 0.10          # post when an event's probability moves >= 10 points

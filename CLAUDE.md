@@ -90,9 +90,13 @@ The operator runs `sudo` via the `!` prefix (no passwordless sudo). See memory `
 - Issue #6: surface API cost on the dashboard. Issue #7: attach the market link per platform.
   Issue #13: hot-reload persona (persona/policy load once at daemon startup → voice/config edits
   currently need a service restart).
-- **Snapshot retention/pruning + DB bloat — top operational risk.** `market_snapshots` grows
-  unbounded and the `*.db-wal` has ballooned (~2.4 GB seen, checkpoints starving) — the real cause
-  behind past lock contention / slowing poll cycles. Its own chunk.
+- **Snapshot retention/pruning — SHIPPED (`pruner.py`).** `market_snapshots` grew unbounded; now
+  `pulse prune` (daily `prediction-pulse-prune.timer`) drops rows older than `SNAPSHOT_RETENTION_DAYS`
+  (7) and reclaims freed pages via incremental auto_vacuum + WAL truncate-checkpoint. New DBs are born
+  `auto_vacuum=INCREMENTAL`; the **one-time** `pulse vacuum` converts + compacts an existing DB (run
+  with writers stopped — needs an exclusive lock). Steady state ~40k rows/~25 MB. NB the old
+  `*.db-wal` balloon (~2.4 GB, checkpoints starving) was a symptom of broad-poll write pressure and
+  resolved once the trend poller cut inflow ~22x.
 - A **new detector type** (operator is designing it). A **reverse-poller** (Bluesky trending →
   matching Kalshi market) — plugs in as another engagement `TargetSource` and/or feeds original
   posts. Cross-posting (X / Threads).
