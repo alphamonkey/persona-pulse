@@ -88,7 +88,24 @@ def test_waits_on_the_provided_stop_event_between_cycles():
 
     job = CountingJob()
     IntervalScheduler(job, interval_seconds=7, max_iterations=2).run(RecordingStop())
-    assert waits == [7, 7]  # one wait per completed cycle
+    assert waits == [7]  # waits BETWEEN cycles only — no pointless wait after the final one
+
+
+def test_returns_promptly_after_final_bounded_iteration():
+    """With max_iterations, the scheduler must not sleep a full interval before exiting —
+    the supervisor's one-shot runs (--max-iterations 1) would otherwise hang on long
+    intervals like prune's daily cadence."""
+    waits = []
+
+    class RecordingStop(threading.Event):
+        def wait(self, timeout=None):
+            waits.append(timeout)
+            return super().wait(0)
+
+    job = CountingJob()
+    IntervalScheduler(job, interval_seconds=86400, max_iterations=1).run(RecordingStop())
+    assert job.calls == 1
+    assert waits == []  # exited without waiting out the day-long interval
 
 
 def test_jitter_adds_random_offset_to_wait(monkeypatch):
@@ -103,4 +120,4 @@ def test_jitter_adds_random_offset_to_wait(monkeypatch):
 
     IntervalScheduler(CountingJob(), interval_seconds=10, max_iterations=2,
                       jitter_seconds=5).run(RecordingStop())
-    assert waits == [13, 13]  # interval 10 + jitter 3.0
+    assert waits == [13]  # interval 10 + jitter 3.0, between cycles only

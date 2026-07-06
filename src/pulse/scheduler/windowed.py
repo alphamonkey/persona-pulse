@@ -43,8 +43,6 @@ class WindowedScheduler:
                  self._job.name, self._interval, len(self._windows), self._tz)
         n = 0
         while not stop.is_set():
-            if self._max_iterations and n >= self._max_iterations:
-                break
             now = self._clock()
             if within_window(now, self._windows, self._tz):
                 n += 1
@@ -52,6 +50,8 @@ class WindowedScheduler:
                     self._job.run()
                 except Exception:  # noqa: BLE001 — one bad cycle must not kill the loop
                     log.exception("job '%s' cycle %d failed", self._job.name, n)
+                if self._max_iterations and n >= self._max_iterations:
+                    break  # done — don't sleep an interval just to notice
                 stop.wait(self._interval + random.uniform(0, self._jitter))
             else:
                 idle = min(seconds_until_next_window(now, self._windows, self._tz), self._idle_cap)

@@ -43,9 +43,15 @@ WRITER_MODEL = "claude-haiku-4-5-20251001"  # cheap; this is a language task, lo
 
 # ── Persistence ──
 # Retention: market_snapshots grows unbounded (one row per market per poll). The detector only ever
-# reads the last few hours per market, so days is a huge safety margin. `pulse prune` (daily timer)
-# drops rows older than this and reclaims the freed pages.
+# reads the last few hours per market, so days is a huge safety margin. The supervisor prunes each
+# persona's DB daily (standalone `pulse prune` remains for manual runs).
 SNAPSHOT_RETENTION_DAYS = 7
+PRUNE_INTERVAL_SECONDS = 86400   # in-supervisor prune cadence: daily
+
+# ── Secrets (per-persona env files; gitignored — see .env.example for the expected keys) ──
+# `pulse supervise <name>` loads secrets/<name>.env over the process env; the pulse@<name>
+# systemd template points EnvironmentFile= at the same file.
+SECRETS_DIR = os.environ.get("PULSE_SECRETS_DIR", "secrets")
 
 # ── Detector thresholds (starting points — tune from real data) ──
 MIN_ODDS_MOVE = 0.10          # post when an event's probability moves >= 10 points

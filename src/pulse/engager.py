@@ -23,13 +23,24 @@ log = logging.getLogger("pulse")
 
 @dataclass
 class EngagePolicy:
-    """What to engage with and how much. Built from config by the CLI/service."""
+    """What to engage with and how much. Built from a persona's EngageSpec (or config defaults)."""
 
     allow: list[str] = field(default_factory=list)   # relevance filter (keep if matches)
     deny: list[str] = field(default_factory=list)    # safety filter (drop if matches)
     actions: tuple[SignalKind, ...] = (SignalKind.LIKE,)  # enabled actions, attempted in order
     caps: dict[SignalKind, int] = field(default_factory=dict)  # per-action rolling-24h cap
     queries: list[str] = field(default_factory=list)  # Bluesky search terms for the target source
+
+    @classmethod
+    def from_spec(cls, spec) -> EngagePolicy:
+        """Build from a pulse.pipeline.EngageSpec (whose strings become SignalKinds here)."""
+        return cls(
+            allow=list(spec.allow),
+            deny=list(spec.deny),
+            actions=tuple(SignalKind(a) for a in spec.actions),
+            caps={SignalKind(k): v for k, v in spec.caps.items()},
+            queries=list(spec.queries),
+        )
 
 
 @dataclass
