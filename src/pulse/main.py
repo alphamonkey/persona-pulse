@@ -1,5 +1,6 @@
 """CLI entry point.
 
+`pulse supervise <name>` runs EVERYTHING the persona's [pipeline] declares in one process.
 `pulse poll`  runs one detect cycle against live Kalshi data (dryrun).
 `pulse run`   drives the same cycle on a cadence (dryrun), until stopped.
 `pulse draft` writes post drafts for the top recent events in a persona's voice (dryrun);
@@ -15,6 +16,9 @@ import contextlib
 import logging
 import signal
 import threading
+from pathlib import Path
+
+from dotenv import load_dotenv
 
 from pulse import config
 from pulse.drafter import DraftJob, draft_once
@@ -29,22 +33,12 @@ from pulse.publisher import PublishJob
 from pulse.scheduler.interval import IntervalScheduler
 from pulse.scheduler.windowed import WindowedScheduler
 from pulse.store.db import Database
-from pulse.venue.kalshi import KalshiClient, KalshiSource
-from pulse.venue.trending import BlueskyTrendClient, BlueskyTrendSource
-from pulse.writer.base import Writer
-from pulse.writer.claude import ClaudeWriter
-from pulse.writer.template import TemplateWriter
+from pulse.supervisor import supervise
+from pulse.venue.kalshi import KalshiClient
+from pulse.venue.registry import make_source
+from pulse.writer.factory import make_writer
 
 log = logging.getLogger("pulse")
-
-
-def _make_source(source_name: str, kalshi_client: KalshiClient):
-    """The broad category-allowlist source, or the Bluesky-trend-selected peer. Both yield
-    `venue="kalshi"` snapshots, so the store + detector are unchanged either way."""
-    if source_name == "trend":
-        return BlueskyTrendSource(
-            BlueskyTrendClient(config.bluesky_handle(), config.bluesky_app_password()), kalshi_client)
-    return KalshiSource(kalshi_client)
 
 
 @contextlib.contextmanager
@@ -54,7 +48,7 @@ def _poll_job(source_name: str = "kalshi"):
     try:
         client = KalshiClient()
         try:
-            yield PollJob(_make_source(source_name, client), db)
+            yield PollJob(make_source(source_name, client), db)
         finally:
             client.close()
     finally:
@@ -192,12 +186,21 @@ def _run_vacuum() -> None:
         db.close()
 
 
-def make_writer() -> Writer:
-    """ClaudeWriter when an API key is configured; the zero-cost template writer otherwise."""
-    if config.anthropic_api_key():
-        return ClaudeWriter()
-    log.warning("ANTHROPIC_API_KEY not set — using the template writer (no LLM).")
-    return TemplateWriter()
+def _run_supervise(persona_name: str, max_iterations: int) -> None:
+    """Run the persona's whole declared stack in this process (the pulse@<name> service body)."""
+    # Per-persona secrets win over the repo-level .env loaded at config import — under systemd
+    # the same file arrives via EnvironmentFile=, so override=True is a no-op there.
+    secrets = Path(config.SECRETS_DIR) / f"{persona_name}.env"
+    if secrets.exists():
+        load_dotenv(secrets, override=True)
+        log.info("loaded secrets from %s", secrets)
+    persona = load_persona(persona_name)
+    db = Database(config.db_path())
+    db.connect()
+    try:
+        supervise(persona, db, max_iterations=max_iterations, stop=_install_stop())
+    finally:
+        db.close()
 
 
 def _run_draft(limit: int, persona_name: str, interval: int, max_iterations: int,
@@ -225,6 +228,11 @@ def _run_draft(limit: int, persona_name: str, interval: int, max_iterations: int
 def cli(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="pulse")
     sub = parser.add_subparsers(dest="command", required=True)
+    sup_p = sub.add_parser("supervise",
+                           help="Run ALL jobs a persona's [pipeline] declares, in one process.")
+    sup_p.add_argument("persona", help="Persona name under personas/.")
+    sup_p.add_argument("--max-iterations", type=int, default=0,
+                       help="Stop each job after N cycles; 0 = run until stopped (default: 0).")
     poll_p = sub.add_parser("poll", help="Run one poll+detect cycle and exit (no publish).")
     poll_p.add_argument("--source", choices=("kalshi", "trend"), default="kalshi",
                         help="Market selection: broad allowlist (kalshi) or Bluesky-trend-selected (trend).")
@@ -291,7 +299,9 @@ def cli(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    if args.command == "poll":
+    if args.command == "supervise":
+        _run_supervise(args.persona, args.max_iterations)
+    elif args.command == "poll":
         _run_poll(args.source)
     elif args.command == "run":
         _run_loop(args.interval, args.max_iterations, args.jitter, args.source)
