@@ -1,9 +1,10 @@
-"""Source registry: [pipeline.poll] sources resolve by name to SnapshotSource builders."""
+"""Source registry: [pipeline.poll] sources resolve by name to ContentSource builders."""
 
 from __future__ import annotations
 
 import pytest
 
+from pulse.venue.base import ContentSource, SnapshotContentSource
 from pulse.venue.kalshi import KalshiClient, KalshiSource
 from pulse.venue.registry import make_source
 from pulse.venue.trending import BlueskyTrendSource
@@ -17,11 +18,16 @@ def client():
 
 
 def test_kalshi_source(client):
-    assert isinstance(make_source("kalshi", client), KalshiSource)
+    src = make_source("kalshi", client)
+    assert isinstance(src, ContentSource)
+    assert isinstance(src, SnapshotContentSource)
+    assert isinstance(src.source, KalshiSource)
 
 
 def test_trend_source(client):
-    assert isinstance(make_source("trend", client), BlueskyTrendSource)
+    src = make_source("trend", client)
+    assert isinstance(src, SnapshotContentSource)
+    assert isinstance(src.source, BlueskyTrendSource)
 
 
 def test_unknown_source_names_the_known_ones(client):

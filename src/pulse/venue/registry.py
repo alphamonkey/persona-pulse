@@ -8,7 +8,7 @@ as it yields normalized Snapshots.
 from __future__ import annotations
 
 from pulse import config
-from pulse.venue.base import SnapshotSource
+from pulse.venue.base import ContentSource, SnapshotContentSource, SnapshotSource
 from pulse.venue.kalshi import KalshiClient, KalshiSource
 from pulse.venue.trending import BlueskyTrendClient, BlueskyTrendSource
 
@@ -28,10 +28,10 @@ _BUILDERS = {
 }
 
 
-def make_source(name: str, kalshi_client: KalshiClient) -> SnapshotSource:
+def make_source(name: str, kalshi_client: KalshiClient) -> ContentSource:
     try:
         builder = _BUILDERS[name]
     except KeyError:
         known = ", ".join(sorted(_BUILDERS))
         raise ValueError(f"unknown snapshot source {name!r} (known: {known})") from None
-    return builder(kalshi_client)
+    return SnapshotContentSource(builder(kalshi_client))
