@@ -67,10 +67,10 @@ def build_supervised(
         if kalshi_client is None:
             raise ValueError(f"persona {persona.name} declares [pipeline.poll] "
                              "but no kalshi_client was provided")
-        for source_name in spec.poll.sources:
+        for source_spec in spec.poll.sources:
             db = make_db()
-            job = PollJob(make_source(source_name, kalshi_client), db)
-            entries.append(SupervisedJob(f"poll:{source_name}", job, IntervalScheduler(
+            job = PollJob(make_source(source_spec.type, kalshi_client), db)
+            entries.append(SupervisedJob(f"poll:{source_spec.type}", job, IntervalScheduler(
                 job, spec.poll.interval,
                 max_iterations=max_iterations, jitter_seconds=spec.poll.jitter), db))
 
