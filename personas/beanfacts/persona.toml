@@ -1,0 +1,46 @@
+# Bean Facts — a persona with no external input at all. The generator source emits rotating
+# topic seeds; Claude invents one obviously-false bean "fact" per post in the voice defined in
+# system_prompt.md. First persona on the ContentSource seam that never touches a market API.
+display_name = "Bean Facts"
+handle = "bean-facts.bsky.social"
+avatar = "avatar.png"
+bio = "Daily facts about beans. Accuracy not guaranteed, or attempted. Parody — every fact is fiction."
+
+[[channels]]
+platform = "bluesky"
+handle = "bean-facts.bsky.social"
+
+[pipeline.poll]
+interval = 3600                   # cheap cycles; the bucket below gates actual seed emission
+
+[[pipeline.poll.source]]
+type = "generator"
+bucket = "4h"                     # one seed per topic per 4h bucket -> up to 6 seeds/day
+count = 1
+topics = [
+  "bean history",
+  "bean science",
+  "bean varieties",
+  "beans in space",
+  "bean etiquette",
+  "bean economics",
+]
+
+[pipeline.draft]
+interval = 3600
+
+[pipeline.publish]
+interval = 14400
+jitter = 600
+windows = [["07:00", "10:00"], ["12:00", "14:00"], ["17:00", "22:00"]]
+tz = "America/New_York"
+
+[pipeline.engage]
+interval = 3600
+jitter = 600
+windows = "publish"
+queries = ["beans", "legumes"]    # engage with anything bean-related; allow defaults to queries
+actions = ["like", "repost"]
+
+[pipeline.metrics]
+interval = 3600
