@@ -99,6 +99,25 @@ def test_build_unknown_source_rejected(db):
         build_supervised(persona, db, source_context=_ctx())
 
 
+def test_generator_persona_builds_without_kalshi(db):
+    built = []
+
+    def factory():
+        built.append(1)
+        return _FakeKalshi()
+
+    persona = _persona({
+        "poll": {"source": [{"type": "generator", "topics": ["beans"], "bucket": "4h"}]},
+        "draft": {},
+        "publish": {"windows": []},
+        "metrics": {},
+    })
+    entries = build_supervised(persona, db,
+                               source_context=SourceContext(kalshi_factory=factory))
+    assert "poll:generator" in {e.name for e in entries}
+    assert built == []  # no market sources declared -> Kalshi never constructed
+
+
 def test_prune_is_always_scheduled(db):
     entries = build_supervised(_persona({"metrics": {}}), db)
     assert {e.name for e in entries} == {"metrics", "prune"}

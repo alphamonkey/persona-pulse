@@ -13,6 +13,7 @@ from collections.abc import Callable
 from pulse import config
 from pulse.pipeline import SourceSpec
 from pulse.venue.base import ContentSource, SnapshotContentSource
+from pulse.venue.generator import GeneratorSource
 from pulse.venue.kalshi import KalshiClient, KalshiSource
 from pulse.venue.trending import BlueskyTrendClient, BlueskyTrendSource
 
@@ -58,9 +59,15 @@ def _trend(options: dict, ctx: SourceContext) -> ContentSource:
         ctx.kalshi()))
 
 
+def _generator(options: dict, ctx: SourceContext) -> ContentSource:
+    _check_options("generator", options, ("topics", "count", "bucket"))
+    return GeneratorSource(**options)
+
+
 _BUILDERS: dict[str, Callable[[dict, SourceContext], ContentSource]] = {
-    "kalshi": _kalshi,  # broad category-allowlist poll
-    "trend": _trend,    # Bluesky-trend-selected markets
+    "kalshi": _kalshi,        # broad category-allowlist poll
+    "trend": _trend,          # Bluesky-trend-selected markets
+    "generator": _generator,  # no external input: seed Events the writer riffs on
 }
 
 
