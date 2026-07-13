@@ -161,7 +161,11 @@ PERSONAS_DIR = os.environ.get("PULSE_PERSONAS_DIR", "personas")
 PERSONA = os.environ.get("PULSE_PERSONA", "example")  # which persona to write as
 WRITER_MAX_TOKENS = 150          # a Bluesky post is short; cap cost + runaway
 MAX_DRAFT_AGE_HOURS = 24         # don't publish drafts older than this (stale news)
+# Per-platform post limits. These are DEFAULTS for the channel registry (channels.py) — a channel
+# may override its own (Mastodon instances configure theirs). A draft is written to the *smallest*
+# limit across the persona's channels, so no publisher ever has to truncate it.
 BLUESKY_MAX_GRAPHEMES = 300      # Bluesky post length limit
+MASTODON_MAX_CHARS = 500         # Mastodon's default; instances vary — override per channel
 DRAFTS_PER_RUN = MAX_POSTS_PER_DAY  # cap events sent to the writer per draft cycle
 
 # Event selection weights (which detected events are most worth posting; tune from data).
