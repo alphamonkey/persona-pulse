@@ -31,7 +31,7 @@ def collect_once(db: Database, source: EngagementSource, *, handle: str,
         return MetricsReport()
 
     stats = source.account(handle)
-    db.insert_account_snapshot(stats)
+    db.insert_account_snapshot(stats, platform=source.name)
     uris = db.recent_post_uris(source.name, post_limit)
     engagement = source.engagement(uris)
     db.upsert_post_metrics(engagement)
