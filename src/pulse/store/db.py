@@ -131,15 +131,17 @@ class Database:
     def connect(self) -> None:
         self.conn = sqlite3.connect(self.path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        # FIRST, before any pragma that can contend: several processes may open this file at once
+        # (a supervisor restarting while a one-shot CLI command runs), and everything below —
+        # the WAL conversion, the schema script, the migration — can need a lock. Without the
+        # timeout already in place, a loser errors immediately instead of waiting its turn.
+        self.conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
         # Born reclaimable: incremental auto_vacuum lets `reclaim()` hand freed pages back to the OS
         # after a prune. MUST precede the first CREATE TABLE to take effect on a fresh DB; on an
         # already-created DB it's inert until a full VACUUM converts it (see `vacuum()`).
         self.conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
+        # Converting a not-yet-WAL file needs an exclusive lock (a no-op once it IS WAL).
         self.conn.execute("PRAGMA journal_mode=WAL")
-        # Two writer processes (poller + drafter) share this DB; WAL serializes writers, so make
-        # a writer wait for the lock rather than erroring. Explicit so it doesn't depend on
-        # sqlite3.connect's implicit timeout default.
-        self.conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.executescript(_SCHEMA)
         self._migrate()
